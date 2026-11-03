@@ -5,7 +5,7 @@ __host__ void allmargin_fixed(const float* __restrict__ lina_ptr, const float* _
     using VecC = Eigen::Matrix<std::complex<float>, NS, 1>;
     const int nt = CFG.total_dim;
     const int FREQ = CFG.freq;
-    const float TS = CFG.ts, TARGET_GM = CFG.target_gm, TARGET_PM = CFG.target_pm;
+    const float TS = CFG.ts, TARGET_GM = CFG.target_gm, TARGET_PM = CFG.target_pm, TARGET_B = CFG.target_b;
     const float UNSTABLE_ERR = CFG.unstable_err, EIG_FAIL_ERR = CFG.eig_fail_err;
 
     // margins (batch: observer's nominal model. serial: true linear plant)
@@ -29,12 +29,23 @@ __host__ void allmargin_fixed(const float* __restrict__ lina_ptr, const float* _
         }
     }
 
+    // b_{P,C} depends on plant scaling, so normalize the plant to unit gain at the spec crossover:
+    // Ps = ALPHA*P, Cs = C/ALPHA leaves the loop P*C untouched
+    float ALPHA;
+    {
+        const std::complex<float> zc = std::polar(1.0f, CFG.crossover*TS);
+        const VecC x = (zc*MatC::Identity() - PLANT_A_c).partialPivLu().solve(PLANT_B_c);
+        const float pmag = std::abs((PLANT_C_c.transpose()*x).value() + PLANT_D);
+        if (!x.allFinite() || !(pmag > 0.0f) || !isfinite(pmag)) CUDAERR("allmargin: plant has no finite nonzero gain at crossover = {} rad/s", CFG.crossover);
+        ALPHA = 1.0f/pmag;
+    }
+
     #pragma omp parallel for
     for (int t=0; t<CFG.n_threads; t++) {
         float* out = &info_ptr[static_cast<size_t>(t)*CFG.info_mx_width];
         float* sc = out + CFG.info_scoring;      // score, behavior_err, margin_err
-        float* am = out + CFG.info_allmargin;    // GM_dB, PM, DM_ms, stable
-        if (sc[0] >= UNSTABLE_ERR) { sc[1] = sc[0]; sc[2] = sc[0]; am[0] = 0.0f; am[1] = 0.0f; am[2] = 0.0f; am[3] = 0.0f; continue; }    // set penalty score if it's flagged as unstable
+        float* am = out + CFG.info_allmargin;    // GM_dB, PM, DM_ms, stable, b_PC
+        if (sc[0] >= UNSTABLE_ERR) { sc[1] = sc[0]; sc[2] = sc[0]; am[0] = 0.0f; am[1] = 0.0f; am[2] = 0.0f; am[3] = 0.0f; am[4] = 0.0f; continue; }    // set penalty score if it's flagged as unstable
 
         Eigen::Map<const Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> LIN_A1(&lina_ptr[static_cast<size_t>(t)*CFG.lina_mx_width], nt, nt);
         Eigen::Matrix<float, NS, NS> OPEN_A = LIN_A1.template topLeftCorner<NS, NS>();
@@ -69,7 +80,7 @@ __host__ void allmargin_fixed(const float* __restrict__ lina_ptr, const float* _
         if (!nominal_stable) {    // if the loop is unstable just penalize the score
             sc[1] = sc[0];
             sc[2] = UNSTABLE_ERR;
-            am[0] = 0.0f; am[1] = 0.0f; am[2] = 0.0f; am[3] = 0.0f;
+            am[0] = 0.0f; am[1] = 0.0f; am[2] = 0.0f; am[3] = 0.0f; am[4] = 0.0f;
             float total = logf(sc[0] + UNSTABLE_ERR + 0x1.a484cp-100f);
             sc[0] = isfinite(total) ? total : EIG_FAIL_ERR;
             continue;
@@ -81,7 +92,7 @@ __host__ void allmargin_fixed(const float* __restrict__ lina_ptr, const float* _
         const MatC I = MatC::Identity();
 
         // score on smallest margin (it is the least stable)
-        float PM = 0x1.fffffep127f, GM_dB = 0x1.fffffep127f, DM_ms = 0x1.fffffep127f;
+        float PM = 0x1.fffffep127f, GM_dB = 0x1.fffffep127f, DM_ms = 0x1.fffffep127f, B_PC = 1.0f;
         bool gain_crossed = false;
         bool ok = true;
         float prevMag = 0.0f, prevPhase = 0.0f, prevRaw = 0.0f, prevTheta = 0.0f;
@@ -98,6 +109,12 @@ __host__ void allmargin_fixed(const float* __restrict__ lina_ptr, const float* _
             const float m = std::abs(resp);
             const float raw = std::arg(resp);
             const float theta_w = std::arg(z_ptr[w]);
+
+            // vinnicombe margin: b(w) = |1 + Ps*Cs| / (sqrt(1+|Ps|^2) * sqrt(1+|Cs|^2)), b_PC = min over the sweep
+            {
+                const float Ps = ALPHA*std::abs(plant_resp[w]), Cs = std::abs(Gz)/ALPHA;
+                B_PC = fminf(B_PC, std::abs(1.0f + resp)/(sqrtf(1.0f + Ps*Ps)*sqrtf(1.0f + Cs*Cs)));
+            }
 
             if (w > 0) {
                 float delta = raw - prevRaw;
@@ -143,13 +160,14 @@ __host__ void allmargin_fixed(const float* __restrict__ lina_ptr, const float* _
 
         if (!ok) {
             sc[1] = sc[0]; sc[2] = EIG_FAIL_ERR; sc[0] = EIG_FAIL_ERR;
-            am[0] = 0.0f; am[1] = 0.0f; am[2] = 0.0f; am[3] = 1.0f;
+            am[0] = 0.0f; am[1] = 0.0f; am[2] = 0.0f; am[3] = 1.0f; am[4] = 0.0f;
             continue;
         }
 
         float err_gm = fmaxf(0.0f, TARGET_GM - GM_dB)/TARGET_GM;
         float err_pm = gain_crossed ? fmaxf(0.0f, TARGET_PM - PM)/TARGET_PM : 0.0f;
-        float margin_err = err_gm*err_gm + err_pm*err_pm;
+        float err_b = fmaxf(0.0f, TARGET_B - B_PC)/TARGET_B;
+        float margin_err = err_gm*err_gm + err_pm*err_pm + err_b*err_b;
 
         sc[1] = sc[0];
         sc[2] = margin_err;
@@ -157,6 +175,7 @@ __host__ void allmargin_fixed(const float* __restrict__ lina_ptr, const float* _
         am[1] = PM;
         am[2] = DM_ms;
         am[3] = 1.0f;
+        am[4] = B_PC;
         float total = logf(sc[0] + margin_err + 0x1.a484cp-100f);
         sc[0] = isfinite(total) ? total : EIG_FAIL_ERR;
     }

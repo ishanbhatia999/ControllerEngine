@@ -19,7 +19,7 @@ struct EngineConfig {
 
     // scoring / fit
     float fit_start, fit_end, steady_start;
-    float bandwidth, damping, target_gm, target_pm;
+    float bandwidth, damping, crossover_coeff, target_gm, target_pm, target_b;
     float eig_fail_err, unstable_err;
     int freq;
     float freq_min;
@@ -33,6 +33,7 @@ struct EngineConfig {
     int eigen_mx_width, lina_mx_width, ata_mx_width, atb_mx_width;
     int nl_instructions_total;
     float ts, fit_t0, fit_t1;
+    float damping2, damping4, crossover;
     size_t total_candidates, cuda_mx_size, info_mx_size, eigen_mx_size, lina_mx_size, ata_mx_size, atb_mx_size, yplant_size;
 
     void derive() {
@@ -49,7 +50,7 @@ struct EngineConfig {
         info_scoring = input_size;
         info_freqresp = info_scoring+3;
         info_allmargin = info_freqresp+2;
-        info_modal = info_allmargin+4;
+        info_modal = info_allmargin+5;
         info_mx_width = info_modal+3*total_dim+1;
         eigen_mx_width = 2*total_dim;
         lina_mx_width = total_dim*total_dim;
@@ -59,6 +60,11 @@ struct EngineConfig {
         ts = 1.0f/time;
         fit_t0 = fit_start;
         fit_t1 = (fit_end*time - 1.0f)/time;
+        
+        damping2 = damping*damping; damping4 = damping2*damping2;
+        // rad/s: wn from the bandwidth/damping spec (same as modalsolve's targetwn), times the 2nd-order gain crossover ratio wc/wn
+        const float wn = 2.0f*PI*bandwidth/sqrtf( (1.0f-2.0f*damping2) + sqrtf(4.0f*damping4 - 4.0f*damping2 + 2.0f) );
+        crossover = crossover_coeff*wn*sqrtf( sqrtf(4.0f*damping4 + 1.0f) - 2.0f*damping2 );
 
         total_candidates = static_cast<size_t>(n_rounds) * n_threads;
         cuda_mx_size = static_cast<size_t>(n_threads) * cuda_mx_width;
@@ -201,8 +207,12 @@ __host__ EngineConfig load_config(const std::string& filename) {
 
     c.bandwidth = get_float("bandwidth");
     c.damping = get_float("damping");
+    c.crossover_coeff = get_float("crossover_coeff");
     c.target_gm = get_float("target_gm");
     c.target_pm = get_float("target_pm");
+    c.target_b = get_float("target_b");
+    if (!(c.crossover_coeff > 0.0f)) CUDAERR("{}: need crossover_coeff > 0", filename);
+    if (!(c.target_b > 0.0f && c.target_b < 1.0f)) CUDAERR("{}: need 0 < target_b < 1", filename);    // b_{P,C} is in [0,1], and target_b divides err_b
     c.eig_fail_err = get_float("eig_fail_err", "1.0e18");
     c.unstable_err = get_float("unstable_err", "1.0e6");
 
@@ -221,5 +231,6 @@ __host__ EngineConfig load_config(const std::string& filename) {
     if (!kv.empty()) CUDAERR("{}: unknown key `{}`", filename, kv.begin()->first);
 
     c.derive();
+    if (!(c.crossover > 0.0f && c.crossover < c.freq_max)) CUDAERR("{}: crossover {} rad/s (from bandwidth, damping, crossover_coeff) must be in (0, Nyquist = {})", filename, c.crossover, c.freq_max);
     return c;
 }
