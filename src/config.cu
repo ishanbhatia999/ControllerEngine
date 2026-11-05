@@ -13,8 +13,9 @@ struct EngineConfig {
     bool serial;    // mode = serial: one plant per round (stacked DISCRETE_*/BASE_PARAMS .bin), margins against that plant
 
     // simulation
-    int time;
-    double ref_step_time;    // fraction of time; reference is 0 before it, ref_amplitude from it on
+    int time;    // samples per run
+    float duration;    // seconds per run, so ts = duration/time
+    double ref_step_time;    // fraction of the run; reference is 0 before it, ref_amplitude from it on
     float ref_amplitude;
 
     // scoring / fit
@@ -38,7 +39,8 @@ struct EngineConfig {
 
     void derive() {
         n_threads = (n_cores/128)*1536;
-        freq_max = PI*time;
+        ts = duration/time;
+        freq_max = PI/ts;
         total_dim = statespace_dim + discrete_dim;
         dc_dim = discrete_dim;
         u_dim = statespace_dim;
@@ -57,9 +59,8 @@ struct EngineConfig {
         ata_mx_width = 2*total_dim*2*total_dim;
         atb_mx_width = 2*total_dim;
 
-        ts = 1.0f/time;
-        fit_t0 = fit_start;
-        fit_t1 = (fit_end*time - 1.0f)/time;
+        fit_t0 = fit_start*duration;
+        fit_t1 = (fit_end*time - 1.0f)*ts;
         
         damping2 = damping*damping; damping4 = damping2*damping2;
         // rad/s: wn from the bandwidth/damping spec (same as modalsolve's targetwn), times the 2nd-order gain crossover ratio wc/wn
@@ -194,6 +195,8 @@ __host__ EngineConfig load_config(const std::string& filename) {
     c.ref_step_time = as_double("ref_step_time", take("ref_step_time"));
     c.ref_amplitude = get_float("ref_amplitude");
     in_range("time", c.time, 2, 1<<24);
+    c.duration = get_float("duration", "1.0");
+    if (!(c.duration > 0.0f)) CUDAERR("{}: need duration > 0", filename);
     in_range("ref_step_time", c.ref_step_time, 0.0, 1.0);
 
     c.fit_start = get_float("fit_start");
@@ -219,7 +222,7 @@ __host__ EngineConfig load_config(const std::string& filename) {
     c.freq = get_int("freq");
     c.freq_min = get_float("freq_min");
     in_range("freq", c.freq, 2, 1<<20);
-    if (!(c.freq_min > 0.0f && c.freq_min < PI*c.time)) CUDAERR("{}: need 0 < freq_min < pi*time (Nyquist)", filename);
+    if (!(c.freq_min > 0.0f && c.freq_min < PI*c.time/c.duration)) CUDAERR("{}: need 0 < freq_min < pi*time/duration (Nyquist)", filename);
 
     {
         const std::string v = take("dump_diagnostics", "false");

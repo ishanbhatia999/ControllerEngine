@@ -68,7 +68,7 @@ __global__ void modalsetup(const float* __restrict__ yplant, const float* __rest
     const int nc = 2*unique;
     const float fit_len = (ENGINE.fit_end-ENGINE.fit_start)*ENGINE.time;
     for (int t=0; t<fit_len; t++) {
-        tval = static_cast<float>(FIT_START_ID+t)/ENGINE.time;
+        tval = static_cast<float>(FIT_START_ID+t)*ENGINE.ts;
         for (int e=0; e<unique; e++) {
             id = 2*e;
             decay = expf(modal_response[id]*tval - shift[e]);

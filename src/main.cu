@@ -582,7 +582,14 @@ __host__ void orchestrate_sims() {
 }
 
 
-extern "C" __declspec(dllexport) int RunControllerEngine() {
+// ControllerEngine.dll on Windows, ControllerEngine.so on Linux/WSL (build_linux.sh) -- same entry point either way
+#if defined(_WIN32)
+#define CE_EXPORT __declspec(dllexport)
+#else
+#define CE_EXPORT __attribute__((visibility("default")))
+#endif
+
+extern "C" CE_EXPORT int RunControllerEngine() {
     try{
         init64KB();
         orchestrate_sims();
