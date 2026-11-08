@@ -3,14 +3,14 @@ __host__ void modalsolve(const float* __restrict__ ata_ptr, const float* __restr
     using MatF = Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, 0, MAX_NC, MAX_NC>;
     using VecF = Eigen::Matrix<float, Eigen::Dynamic, 1, 0, MAX_NC, 1>;
     const int nt = CFG.total_dim, nc2 = 2*nt;
-    const float TS = CFG.ts, BANDWIDTH = CFG.bandwidth, DAMPING = CFG.damping;
+    const float TS = CFG.ts, BANDWIDTH = CFG.bandwidth, DAMPING = CFG.damping, OVERSHOOT = CFG.overshoot, SSE = CFG.steady_state_error;
     const float UNSTABLE_ERR = CFG.unstable_err, EIG_FAIL_ERR = CFG.eig_fail_err;
 
     #pragma omp parallel for
     for (int t=0; t<CFG.n_threads; t++) {
         float* out = &info_ptr[static_cast<size_t>(t)*CFG.info_mx_width];
         float* sc = out + CFG.info_scoring;     // score, behavior_err, margin_err
-        float* fr = out + CFG.info_freqresp;    // aggregate wn, zeta
+        float* fr = out + CFG.info_freqresp;    // aggregate wn, zeta, step overshoot and steady-state value (from modalsetup)
         float* md = out + CFG.info_modal;       // (wn,zeta) per mode, energy per mode, unique count
         if (sc[0] != 0.0f) continue;    // if it's flagged as unstable then skip
 
@@ -95,6 +95,10 @@ __host__ void modalsolve(const float* __restrict__ ata_ptr, const float* __restr
         const float d2 = DAMPING*DAMPING;
         const float targetwn = 2.0f*PI*BANDWIDTH/sqrtf( (1.0f-2.0f*d2) + sqrtf(4.0f*d2*d2 - 4.0f*d2 + 2.0f) );
         float behavior_err = logf(wn/targetwn)*logf(wn/targetwn) + (zeta-DAMPING)*(zeta-DAMPING)/DAMPING/DAMPING;
+        const float err_os = fmaxf(0.0f, fr[2] - OVERSHOOT)/OVERSHOOT;    // hinge: zero inside the overshoot spec
+        behavior_err += err_os*err_os;
+        const float err_ss = fmaxf(0.0f, fabsf(fr[3]/CFG.ref_amplitude - 1.0f) - SSE)/SSE;    // hinge on |yss/ref - 1|
+        behavior_err += err_ss*err_ss;
 
         sc[0] = isfinite(behavior_err) ? behavior_err : EIG_FAIL_ERR;
         sc[1] = sc[0];

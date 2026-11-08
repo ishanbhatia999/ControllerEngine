@@ -55,6 +55,12 @@ __global__ void modalsetup(const float* __restrict__ yplant, const float* __rest
     for (int t=STEADY_START_ID; t<ENGINE.time; t++) yss += yrow[t];
     yss /= (float)(ENGINE.time - STEADY_START_ID);
 
+    // step overshoot relative to the response's own final value; y·yss covers either step sign, y = 0 before the step
+    float peak = 0.0f;
+    for (int t=0; t<ENGINE.time; t++) peak = fmaxf(peak, yrow[t]*yss);
+    out[ENGINE.info_freqresp + 2] = peak/fmaxf(yss*yss, 0x1.0c6f7ap-20f) - 1.0f;
+    out[ENGINE.info_freqresp + 3] = yss;    // modalsolve scores it against the reference
+
     // AtA x = Atb, solve for x (modal coefficients)
     const int FIT_START_ID = ENGINE.fit_start_id;
     const int w = ENGINE.atb_mx_width;

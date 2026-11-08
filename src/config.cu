@@ -20,7 +20,7 @@ struct EngineConfig {
 
     // scoring / fit
     float fit_start, fit_end, steady_start;
-    float bandwidth, damping, crossover_coeff, target_gm, target_pm, target_b;
+    float bandwidth, damping, overshoot, steady_state_error, crossover_coeff, target_gm, target_pm, target_b;
     float eig_fail_err, unstable_err;
     int freq;
     float freq_min;
@@ -51,7 +51,7 @@ struct EngineConfig {
         cuda_mx_width = 2*statespace_dim+1;
         info_scoring = input_size;
         info_freqresp = info_scoring+3;
-        info_allmargin = info_freqresp+2;
+        info_allmargin = info_freqresp+4;
         info_modal = info_allmargin+5;
         info_mx_width = info_modal+3*total_dim+1;
         eigen_mx_width = 2*total_dim;
@@ -84,7 +84,7 @@ EngineConfig CFG;
 struct EngineParams {
     int n_threads, time;
     int statespace_dim, discrete_dim, total_dim;
-    int cuda_mx_width, info_mx_width, info_scoring;
+    int cuda_mx_width, info_mx_width, info_scoring, info_freqresp;
     int eigen_mx_width, lina_mx_width, ata_mx_width, atb_mx_width;
     int fit_start_id, steady_start_id;
     float ts, fit_start, fit_end, fit_t0, fit_t1, unstable_err;
@@ -94,7 +94,7 @@ __host__ EngineParams make_engine_params(const EngineConfig& c) {
     EngineParams p;
     p.n_threads = c.n_threads; p.time = c.time;
     p.statespace_dim = c.statespace_dim; p.discrete_dim = c.discrete_dim; p.total_dim = c.total_dim;
-    p.cuda_mx_width = c.cuda_mx_width; p.info_mx_width = c.info_mx_width; p.info_scoring = c.info_scoring;
+    p.cuda_mx_width = c.cuda_mx_width; p.info_mx_width = c.info_mx_width; p.info_scoring = c.info_scoring; p.info_freqresp = c.info_freqresp;
     p.eigen_mx_width = c.eigen_mx_width; p.lina_mx_width = c.lina_mx_width; p.ata_mx_width = c.ata_mx_width; p.atb_mx_width = c.atb_mx_width;
     p.fit_start_id = (int)(c.fit_start*c.time);
     p.steady_start_id = (int)(c.steady_start*c.time);
@@ -194,6 +194,7 @@ __host__ EngineConfig load_config(const std::string& filename) {
     c.time = get_int("time");
     c.ref_step_time = as_double("ref_step_time", take("ref_step_time"));
     c.ref_amplitude = get_float("ref_amplitude");
+    if (!(c.ref_amplitude != 0.0f)) CUDAERR("{}: need ref_amplitude != 0", filename);    // steady-state error is relative to it
     in_range("time", c.time, 2, 1<<24);
     c.duration = get_float("duration", "1.0");
     if (!(c.duration > 0.0f)) CUDAERR("{}: need duration > 0", filename);
@@ -210,10 +211,14 @@ __host__ EngineConfig load_config(const std::string& filename) {
 
     c.bandwidth = get_float("bandwidth");
     c.damping = get_float("damping");
+    c.overshoot = get_float("overshoot");
+    c.steady_state_error = get_float("steady_state_error");
     c.crossover_coeff = get_float("crossover_coeff");
     c.target_gm = get_float("target_gm");
     c.target_pm = get_float("target_pm");
     c.target_b = get_float("target_b");
+    if (!(c.overshoot > 0.0f)) CUDAERR("{}: need overshoot > 0", filename);    // overshoot divides err_os
+    if (!(c.steady_state_error > 0.0f)) CUDAERR("{}: need steady_state_error > 0", filename);    // divides err_ss
     if (!(c.crossover_coeff > 0.0f)) CUDAERR("{}: need crossover_coeff > 0", filename);
     if (!(c.target_b > 0.0f && c.target_b < 1.0f)) CUDAERR("{}: need 0 < target_b < 1", filename);    // b_{P,C} is in [0,1], and target_b divides err_b
     c.eig_fail_err = get_float("eig_fail_err", "1.0e18");
