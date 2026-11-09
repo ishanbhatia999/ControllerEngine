@@ -92,7 +92,7 @@ Values `1-Y` are reserved for constants supplied by `BASE_PARAMS.BIN`. I suggest
 
 ### `.config` File Layout
 
-```ini
+```text
 statespace_dim
 discrete_dim
 nonlin_dim          # how many nonlinearities you have in the plant model, used with NL_INFO.BIN
