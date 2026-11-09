@@ -46,7 +46,7 @@ nvcc -shared -cudart static -std=c++20 -o ControllerEngine.dll src\main.cu -I li
 **LINEARIZED PLANT:** state space $A, B, C, D$
 - `DISCRETE_C.BIN`
 
-**OBSERVER MODEL:** state space $A, B, C, D$ *(note: you can match statespace A/B/C/D to that of the linearized plant's)*
+**OBSERVER MODEL:** state space $A, B, C, D$ (note: you can match statespace A/B/C/D to that of the linearized plant's)
 - `STATESPACE_A.BIN`, `STATESPACE_A_I.BIN` ($A - I^n$)
 - `STATESPACE_B.BIN`
 - `STATESPACE_C.BIN`
